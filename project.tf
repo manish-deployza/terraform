@@ -33,6 +33,8 @@ variable "apis" {
     "cloudresourcemanager.googleapis.com",
     "serviceusage.googleapis.com",
     "cloudbuild.googleapis.com",
+    "secretmanager.googleapis.com",
+    "storage.googleapis.com",
   ]
 }
 

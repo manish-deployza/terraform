@@ -70,3 +70,39 @@ variable "deletion_protection" {
   type        = bool
   default     = true
 }
+
+variable "enable_github_connection" {
+  description = "Create the GitHub connection, repository link and trigger. Set true only after the PAT is stored in the hr-github-pat secret."
+  type        = bool
+  default     = false
+}
+
+variable "github_app_installation_id" {
+  description = "Installation ID of the Cloud Build GitHub App on the GitHub account/org (number in github.com/settings/installations/<id>)."
+  type        = number
+  default     = null
+}
+
+variable "github_repos" {
+  description = "Repos to build into WAR files, keyed by short name (used in trigger and bucket path)."
+  type = map(object({
+    uri    = string
+    branch = optional(string, "main")
+    dir    = optional(string, ".") # folder holding pom.xml, relative to the repo root
+  }))
+  default = {
+    hr-server = { uri = "https://github.com/manish-deployza/hr-server.git", dir = "backend" }
+    hr-ui     = { uri = "https://github.com/manish-deployza/hr-ui.git" }
+  }
+
+  validation {
+    condition     = alltrue([for r in var.github_repos : can(regex("^https://github\\.com/[^/]+/[^/]+\\.git$", r.uri))])
+    error_message = "Each uri must look like https://github.com/<owner>/<repo>.git."
+  }
+}
+
+variable "build_image" {
+  description = "Builder image with Maven and a JDK matching the VM's Java (21)."
+  type        = string
+  default     = "maven:3-eclipse-temurin-21"
+}
