@@ -106,3 +106,19 @@ variable "build_image" {
   type        = string
   default     = "maven:3-eclipse-temurin-21"
 }
+
+variable "domain" {
+  description = "Public domain for the HR site (e.g. hr.example.com). Its DNS A record must point at the lb_ip output."
+  type        = string
+
+  validation {
+    condition     = can(regex("^([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,}$", var.domain))
+    error_message = "Must be a lowercase fully qualified domain such as hr.example.com."
+  }
+}
+
+variable "restrict_web_to_lb" {
+  description = "When true, ports 80/443 on the VM accept traffic only from the load balancer ranges. Enable after the LB is verified."
+  type        = bool
+  default     = false
+}

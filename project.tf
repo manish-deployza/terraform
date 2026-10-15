@@ -35,6 +35,7 @@ variable "apis" {
     "cloudbuild.googleapis.com",
     "secretmanager.googleapis.com",
     "storage.googleapis.com",
+    "recaptchaenterprise.googleapis.com",
   ]
 }
 

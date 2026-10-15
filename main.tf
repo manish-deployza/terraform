@@ -95,7 +95,7 @@ resource "google_compute_instance" "hr_server1" {
   allow_stopping_for_update = true
 }
 
-# HTTP/HTTPS from anywhere to the web tier
+# HTTP/HTTPS to the web tier: anywhere until restrict_web_to_lb, then LB ranges only
 resource "google_compute_firewall" "hr_allow_web" {
   depends_on = [google_project_service.apis]
 
@@ -107,7 +107,7 @@ resource "google_compute_firewall" "hr_allow_web" {
     ports    = ["80", "443"]
   }
 
-  source_ranges = ["0.0.0.0/0"]
+  source_ranges = var.restrict_web_to_lb ? local.google_lb_ranges : ["0.0.0.0/0"]
   target_tags   = ["hr-web"]
 
   log_config {
