@@ -1,0 +1,206 @@
+# Reads the secrets, deploys the newest WARs from the bucket, then reads and reports
+# the backend's properties. Runs on hr-server1 using the VM service account (hr-server1-sa),
+# which already has secretAccessor on hr-db-password and objectViewer on the WAR bucket.
+#
+#   cd ansible
+#   ansible-playbook deploy.yml -e ansible_user=$(gcloud compute os-login describe-profile --format='value(posixAccounts[0].username)')
+#
+# Idempotent: Tomcat restarts only when a WAR or the secret actually changed. Same job as the
+# VM startup-script (deploy.sh.tftpl), so either can be used to redeploy.
+- name: Deploy HR WARs and verify configuration
+  hosts: hr_web
+  become: true
+  vars:
+    webapps: /var/lib/tomcat10/webapps
+    backend_context: leave-backend
+    sensitive_pattern: "(?i)(pass|secret|token|key)"
+  environment:
+    PATH: "{{ ansible_env.PATH }}:/snap/bin"
+
+  tasks:
+    # ---- secrets and settings --------------------------------------------
+    # Same layout as the VM boot script: /etc/hr/app.env (root-only) loaded by a systemd
+    # drop-in. A secret with no value yet is skipped, not fatal.
+    - name: Read each secret from Secret Manager
+      ansible.builtin.command: >-
+        gcloud secrets versions access latest
+        --secret={{ item.value }} --project={{ gcp_project }}
+      loop: "{{ app_secrets | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: secret_values
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Warn about secrets that have no value yet
+      ansible.builtin.debug:
+        msg: "{{ item.item.value }} has no value yet, skipping {{ item.item.key }}"
+      loop: "{{ secret_values.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+      when: item.rc != 0
+
+    - name: Write /etc/hr/app.env (root-only)
+      ansible.builtin.copy:
+        dest: /etc/hr/app.env
+        content: |
+          {% for k, v in app_env.items() %}
+          {{ k }}="{{ v }}"
+          {% endfor %}
+          {% for r in secret_values.results if r.rc == 0 %}
+          {{ r.item.key }}="{{ r.stdout }}"
+          {% endfor %}
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      notify: Restart tomcat
+
+    - name: Point Tomcat at app.env
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/tomcat10.service.d/hr-db.conf
+        content: |
+          [Service]
+          EnvironmentFile=/etc/hr/app.env
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart tomcat
+
+    # ---- WARs -------------------------------------------------------------
+    - name: Find the newest WAR per app in the bucket
+      ansible.builtin.shell: |
+        set -o pipefail
+        gcloud storage ls -l "gs://{{ war_bucket }}/{{ item.folder }}/**" --project={{ gcp_project }} \
+          | grep '\.war$' | sort -k2 | tail -n 1 | awk '{print $3}'
+      args:
+        executable: /bin/bash
+      loop: "{{ wars }}"
+      register: latest_wars
+      changed_when: false
+      failed_when: latest_wars.stdout | default('') == '' and latest_wars.rc != 0
+
+    - name: Download each WAR to a temp file
+      ansible.builtin.command: >-
+        gcloud storage cp {{ item.stdout }} /tmp/{{ item.item.name }}
+        --project={{ gcp_project }}
+      loop: "{{ latest_wars.results }}"
+      loop_control:
+        label: "{{ item.item.folder }}: {{ item.stdout }}"
+      when: item.stdout | length > 0
+      changed_when: false
+
+    - name: Checksum the downloaded WARs
+      ansible.builtin.stat:
+        path: "/tmp/{{ item.item.name }}"
+        checksum_algorithm: sha256
+      loop: "{{ latest_wars.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      register: new_wars
+      when: item.stdout | length > 0
+
+    - name: Install a WAR only when its content changed
+      ansible.builtin.copy:
+        src: "/tmp/{{ item.item.item.name }}"
+        dest: "{{ webapps }}/{{ item.item.item.name }}"
+        remote_src: true
+        owner: tomcat
+        group: tomcat
+        mode: "0644"
+        checksum: "{{ item.stat.checksum }}"
+      loop: "{{ new_wars.results }}"
+      loop_control:
+        label: "{{ item.item.item.name | default('skipped') }}"
+      when: item.stat is defined and item.stat.exists | default(false)
+      notify: Restart tomcat
+
+    - name: Remove temp WARs
+      ansible.builtin.file:
+        path: "/tmp/{{ item.name }}"
+        state: absent
+      loop: "{{ wars }}"
+      changed_when: false
+
+    # ---- apply changes, then wait for the apps -----------------------------
+    - name: Restart Tomcat now if anything changed
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for the UI to answer
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/login.html
+        status_code: 200
+      register: ui_up
+      retries: 30
+      delay: 10
+      until: ui_up.status == 200
+
+    - name: Wait for the backend API (401 without a session is healthy)
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:8080/{{ backend_context }}/api/me"
+        status_code: [200, 401]
+      register: api_up
+      retries: 30
+      delay: 10
+      until: api_up.status in [200, 401]
+
+    # ---- read properties ---------------------------------------------------
+    - name: Find the backend's .properties files
+      ansible.builtin.find:
+        paths: "{{ webapps }}/{{ backend_context }}/WEB-INF/classes"
+        patterns: "*.properties"
+      register: props
+
+    - name: Read the properties files
+      ansible.builtin.slurp:
+        src: "{{ item.path }}"
+      loop: "{{ props.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      register: prop_files
+
+    - name: Show properties (secret-looking values masked)
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.item.path | basename }}:
+          {{ (item.content | b64decode).splitlines()
+             | reject('match', '^\s*(#|$)')
+             | map('regex_replace', '^(\S*' ~ sensitive_pattern ~ '\S*\s*=).*$', '\1 ****')
+             | list }}
+      loop: "{{ prop_files.results }}"
+      loop_control:
+        label: "{{ item.item.path | basename }}"
+
+    - name: Read the UI runtime config
+      ansible.builtin.slurp:
+        src: /etc/hr/config.json
+      register: ui_config
+
+    - name: Show the UI config and the deployed WAR versions
+      ansible.builtin.debug:
+        msg:
+          ui_config: "{{ ui_config.content | b64decode | from_json }}"
+          wars: "{{ latest_wars.results | map(attribute='stdout') | list }}"
+
+    - name: List the setting names Tomcat gets (values never shown)
+      ansible.builtin.shell: sed -E 's/=.*//' /etc/hr/app.env | sort
+      register: env_names
+      changed_when: false
+
+    - name: Show the setting names
+      ansible.builtin.debug:
+        msg: "{{ env_names.stdout_lines }}"
+
+    - name: Fail if the database or login secrets are missing
+      ansible.builtin.command: grep -qE '^(DB_PASSWORD|JWT_SECRET)=' /etc/hr/app.env
+      register: required
+      changed_when: false
+      failed_when: required.rc != 0
+
+  handlers:
+    - name: Restart tomcat
+      ansible.builtin.systemd:
+        name: tomcat10
+        state: restarted
+        daemon_reload: true

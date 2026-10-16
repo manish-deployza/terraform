@@ -1,0 +1,131 @@
+#!/bin/bash
+# Runs as root on every boot (GCE startup-script). Idempotent: safe to re-run with
+#   sudo google_metadata_script_runner startup
+# Pulls the newest WARs from the bucket, configures MySQL, Tomcat and nginx.
+set -euo pipefail
+exec >> /var/log/hr-deploy.log 2>&1
+echo "=== hr deploy $(date -u +%FT%TZ) ==="
+
+export PATH=$PATH:/snap/bin
+PROJECT="${project}"
+BUCKET="${bucket}"
+DB_SECRET="${db_secret}"
+WEBAPPS=/var/lib/tomcat10/webapps
+
+# 1 GB e2-micro runs MySQL + Tomcat + nginx: add swap once
+if ! swapon --show | grep -q /swapfile; then
+  [ -f /swapfile ] || { fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile; }
+  swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+DB_PASSWORD="$(gcloud secrets versions access latest --secret="$DB_SECRET" --project="$PROJECT")"
+
+# MySQL schema and user (Hibernate creates the tables on first start); `leave` is a reserved word, hence the escaped backticks
+mysql <<SQL
+CREATE DATABASE IF NOT EXISTS \`leave\`;
+CREATE USER IF NOT EXISTS 'user-leaveManagement'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
+ALTER USER 'user-leaveManagement'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
+GRANT ALL ON \`leave\`.* TO 'user-leaveManagement'@'localhost';
+FLUSH PRIVILEGES;
+SQL
+
+# App settings for Tomcat: /etc/hr/app.env is root-only and loaded by a systemd drop-in,
+# so no secret ever sits in instance metadata. Secrets without a value yet are skipped.
+ENV_TMP="$(mktemp)"
+chmod 600 "$ENV_TMP"
+add_env() { printf '%s="%s"\n' "$1" "$2" >> "$ENV_TMP"; }
+add_secret() { # <ENV_VAR> <secret id>
+  local v
+  if v="$(gcloud secrets versions access latest --secret="$2" --project="$PROJECT" 2>/dev/null)"; then
+    add_env "$1" "$v"
+  else
+    echo "secret $2 has no value yet, skipping $1"
+  fi
+}
+%{ for k, v in env ~}
+add_env '${k}' '${v}'
+%{ endfor ~}
+%{ for k, v in secrets ~}
+add_secret '${k}' '${v}'
+%{ endfor ~}
+mkdir -p /etc/hr /etc/systemd/system/tomcat10.service.d
+install -o root -g root -m 0600 "$ENV_TMP" /etc/hr/app.env
+rm -f "$ENV_TMP"
+printf '[Service]\nEnvironmentFile=/etc/hr/app.env\n' > /etc/systemd/system/tomcat10.service.d/hr-db.conf
+systemctl daemon-reload
+
+latest_war() {
+  gcloud storage ls -l "gs://$BUCKET/$1/**" --project="$PROJECT" | grep '\.war$' | sort -k2 | tail -n 1 | awk '{print $3}'
+}
+
+deploy_war() { # <bucket folder> <target war name>
+  local src
+  src="$(latest_war "$1")"
+  [ -n "$src" ] || { echo "no WAR found for $1, skipping"; return 0; }
+  gcloud storage cp "$src" "/tmp/$2" --project="$PROJECT"
+  if ! cmp -s "/tmp/$2" "$WEBAPPS/$2"; then
+    echo "deploying $src as $2"
+    install -o tomcat -g tomcat -m 0644 "/tmp/$2" "$WEBAPPS/$2"
+  fi
+  rm -f "/tmp/$2"
+}
+
+# UI is the root app (replaces Tomcat's default page); backend lives at /leave-backend
+if [ ! -f "$WEBAPPS/ROOT.war" ]; then rm -rf "$WEBAPPS/ROOT"; fi
+deploy_war hr-ui ROOT.war
+deploy_war hr-server leave-backend.war
+systemctl restart tomcat10
+
+# UI runtime config (the WAR only ships config.json.example); served by nginx so WAR redeploys don't wipe it
+mkdir -p /etc/hr
+cat > /etc/hr/config.json <<'JSON'
+{
+  "appName": "Employee Hub",
+  "apiBaseUrl": "/api",
+  "mockMode": false,
+  "features": {}
+}
+JSON
+
+# nginx: /api/ -> backend context, /config.json and / handled here, everything else -> UI
+cat > /etc/nginx/sites-available/hr <<'NGINX'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    client_max_body_size 10m;
+    server_tokens off;
+
+    location = / {
+        return 302 /login.html;
+    }
+
+    location = /config.json {
+        alias /etc/hr/config.json;
+        add_header Cache-Control "no-store";
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080/leave-backend/api/;
+        proxy_cookie_path /leave-backend /;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+    }
+}
+NGINX
+rm -f /etc/nginx/sites-enabled/*
+ln -s /etc/nginx/sites-available/hr /etc/nginx/sites-enabled/hr
+nginx -t
+systemctl reload nginx
+echo "=== done ==="

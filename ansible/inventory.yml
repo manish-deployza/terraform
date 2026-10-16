@@ -1,0 +1,39 @@
+# hr-server1 is reached through IAP (no public SSH). Set the OS Login user at run time:
+#   ansible-playbook deploy.yml -e ansible_user=$(gcloud compute os-login describe-profile --format='value(posixAccounts[0].username)')
+all:
+  children:
+    hr_web:
+      hosts:
+        hr-server1:
+          ansible_ssh_common_args: >-
+            -o ProxyCommand="gcloud compute start-iap-tunnel hr-server1 22
+            --listen-on-stdin --zone us-central1-a --project hr-deployment-prod"
+            -o StrictHostKeyChecking=no
+      vars:
+        gcp_project: hr-deployment-prod
+        war_bucket: hr-deployment-prod-war-bucket
+        site_url: https://drdoxy.in # keep in step with var.domain in Terraform
+        smtp_from: mansihsing4@gmail.com # keep in step with var.smtp_from in Terraform
+        # env var the backend reads -> Secret Manager secret id
+        app_secrets:
+          DB_PASSWORD: hr-db-password
+          JWT_SECRET: hr-jwt-secret
+          SMTP_USERNAME: hr-smtp-username
+          SMTP_PASSWORD: hr-smtp-password
+          RAZORPAY_KEY_ID: hr-razorpay-key-id
+          RAZORPAY_KEY_SECRET: hr-razorpay-key-secret
+          RAZORPAY_WEBHOOK_SECRET: hr-razorpay-webhook-secret
+        app_env:
+          APP_CORS_ALLOWED_ORIGINS: "{{ site_url }}"
+          VERIFY_LINK_BASE: "{{ site_url }}/api/auth/verify-email"
+          VERIFY_REDIRECT_BASE: "{{ site_url }}/verify-email.html"
+          RESET_LINK_BASE: "{{ site_url }}/reset-password.html"
+          INVITE_LINK_BASE: "{{ site_url }}/set-password.html"
+          LOGIN_LINK_BASE: "{{ site_url }}/login.html"
+          BILLING_PORTAL_LINK_BASE: "{{ site_url }}/billing.html"
+          RAZORPAY_ENABLED: "true"
+          SMTP_FROM: "{{ smtp_from }}"
+        # folder in the bucket -> file name Tomcat deploys it as
+        wars:
+          - { folder: hr-ui, name: ROOT.war }
+          - { folder: hr-server, name: leave-backend.war }

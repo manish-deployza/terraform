@@ -34,7 +34,7 @@ resource "google_compute_health_check" "hr_web" {
 
   http_health_check {
     port         = 80
-    request_path = "/"
+    request_path = "/login.html" # "/" redirects, and health checks need a 200
   }
 }
 

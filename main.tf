@@ -9,6 +9,10 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 5.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
 }
 
@@ -50,7 +54,15 @@ resource "google_compute_address" "hr_server1_external_ip" {
 }
 
 resource "google_compute_instance" "hr_server1" {
-  depends_on = [google_project_service.apis]
+  # Hidden dependencies: the boot script reads the secret and the bucket
+  depends_on = [
+    google_project_service.apis,
+    google_secret_manager_secret_version.db_password,
+    google_secret_manager_secret_iam_member.vm_db_password,
+    google_storage_bucket_iam_member.vm_war_reader,
+    google_secret_manager_secret_iam_member.vm_app_secrets,
+    google_secret_manager_secret_version.jwt,
+  ]
 
   name         = "hr-server1"
   machine_type = var.machine_type
@@ -78,7 +90,7 @@ resource "google_compute_instance" "hr_server1" {
 
   service_account {
     email  = google_service_account.hr_server1.email
-    scopes = ["logging-write", "monitoring-write"]
+    scopes = ["cloud-platform"] # needed for Secret Manager; access is limited by the SA's IAM roles
   }
 
   shielded_instance_config {
@@ -90,6 +102,14 @@ resource "google_compute_instance" "hr_server1" {
   metadata = {
     enable-oslogin         = "TRUE"
     block-project-ssh-keys = "TRUE"
+
+    startup-script = templatefile("${path.module}/deploy.sh.tftpl", {
+      project   = var.project
+      bucket    = google_storage_bucket.war_bucket.name
+      db_secret = google_secret_manager_secret.db_password.secret_id
+      secrets   = local.app_secrets
+      env       = local.app_env
+    })
   }
 
   allow_stopping_for_update = true

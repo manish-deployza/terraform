@@ -122,3 +122,27 @@ variable "restrict_web_to_lb" {
   type        = bool
   default     = false
 }
+
+variable "external_secret_ids" {
+  description = "Secret Manager secrets created empty for third-party credentials (Mailjet, Razorpay). Values are added out-of-band."
+  type        = list(string)
+  default = [
+    "hr-smtp-username",
+    "hr-smtp-password",
+    "hr-razorpay-key-id",
+    "hr-razorpay-key-secret",
+    "hr-razorpay-webhook-secret",
+  ]
+}
+
+variable "smtp_from" {
+  description = "Validated sender address on the Mailjet account (empty = not set)."
+  type        = string
+  default     = ""
+}
+
+variable "razorpay_enabled" {
+  description = "Turn on live Razorpay billing. Leave false until the Razorpay secrets have values."
+  type        = bool
+  default     = false
+}
