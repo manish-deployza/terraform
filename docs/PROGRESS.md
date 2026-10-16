@@ -128,3 +128,7 @@ Measured against `TERRAFORM_BEST_PRACTICES.md`:
 - [ ] Ops Agent is not running, so Tomcat/nginx logs stay on the VM only
 - [ ] `restrict_web_to_lb` is still false (VM ports 80/443 open to the internet)
 - [ ] VM is 1 GB (swap in use); consider `e2-small` if it struggles
+- **2026-10-16:** Added `media.tf`: private bucket `hr-deployment-prod-media-bucket` (versioned, public access blocked, CORS for the site, `prevent_destroy`), `roles/storage.objectUser` and signed-URL rights for `hr-server1-sa`. `MEDIA_BUCKET` is passed to the backend via `app.tf` / `ansible/inventory.yml`. The backend (`hr-server`, merged to `main`) now stores profile photos in the bucket when `MEDIA_BUCKET` is set; `employee_photo.bytes` was made nullable by hand (`docs/sql/2026-10-16-photo-object-storage.sql` in that repo). Ran `ansible/deploy.yml` against the VM: deployed `hr-server/c11551e`, 0 failures, second run 0 changed. Fixed the playbook (OS Login key, SHA-1 checksum, masking regex, output format).
+- [ ] Apply the pending Terraform plan (`MEDIA_BUCKET` in the VM startup script); the VM already has it through Ansible
+- [ ] Upload a photo in the app and confirm an object appears under `photos/<userId>/` in the media bucket; the existing photo stays in MySQL until replaced
+- [ ] Delete the stray `feature/photos-in-gcs` branch pushed by mistake to `deployza/ziniapps-hr-server`

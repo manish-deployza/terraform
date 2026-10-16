@@ -5,6 +5,8 @@ all:
     hr_web:
       hosts:
         hr-server1:
+          # same key `gcloud compute ssh` registers with OS Login
+          ansible_ssh_private_key_file: ~/.ssh/google_compute_engine
           ansible_ssh_common_args: >-
             -o ProxyCommand="gcloud compute start-iap-tunnel hr-server1 22
             --listen-on-stdin --zone us-central1-a --project hr-deployment-prod"
@@ -32,6 +34,7 @@ all:
           LOGIN_LINK_BASE: "{{ site_url }}/login.html"
           BILLING_PORTAL_LINK_BASE: "{{ site_url }}/billing.html"
           RAZORPAY_ENABLED: "true"
+          MEDIA_BUCKET: hr-deployment-prod-media-bucket
           SMTP_FROM: "{{ smtp_from }}"
         # folder in the bucket -> file name Tomcat deploys it as
         wars:

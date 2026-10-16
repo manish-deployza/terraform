@@ -13,7 +13,7 @@
   vars:
     webapps: /var/lib/tomcat10/webapps
     backend_context: leave-backend
-    sensitive_pattern: "(?i)(pass|secret|token|key)"
+    sensitive_pattern: "(pass|secret|token|key)"
   environment:
     PATH: "{{ ansible_env.PATH }}:/snap/bin"
 
@@ -94,7 +94,7 @@
     - name: Checksum the downloaded WARs
       ansible.builtin.stat:
         path: "/tmp/{{ item.item.name }}"
-        checksum_algorithm: sha256
+        checksum_algorithm: sha1
       loop: "{{ latest_wars.results }}"
       loop_control:
         label: "{{ item.item.name }}"
@@ -166,7 +166,7 @@
           {{ item.item.path | basename }}:
           {{ (item.content | b64decode).splitlines()
              | reject('match', '^\s*(#|$)')
-             | map('regex_replace', '^(\S*' ~ sensitive_pattern ~ '\S*\s*=).*$', '\1 ****')
+             | map('regex_replace', '^(\S*' ~ sensitive_pattern ~ '\S*\s*=).*$', '\1 ****', ignorecase=True)
              | list }}
       loop: "{{ prop_files.results }}"
       loop_control:

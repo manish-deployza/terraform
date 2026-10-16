@@ -16,3 +16,8 @@ output "recaptcha_site_key" {
   description = "reCAPTCHA Enterprise site key for the hr-ui widget."
   value       = google_recaptcha_enterprise_key.hr_web.name
 }
+
+output "media_bucket" {
+  description = "GCS bucket for profile photos, CSV/TSV and other uploads."
+  value       = google_storage_bucket.media.url
+}

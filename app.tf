@@ -109,6 +109,7 @@ locals {
     LOGIN_LINK_BASE          = "${local.site_url}/login.html"
     BILLING_PORTAL_LINK_BASE = "${local.site_url}/billing.html"
     RAZORPAY_ENABLED         = tostring(var.razorpay_enabled)
+    MEDIA_BUCKET             = google_storage_bucket.media.name
     },
     var.smtp_from == "" ? {} : { SMTP_FROM = var.smtp_from },
   )
